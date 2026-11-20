@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Slightly Better Find",
+  "version": "1.0.5",
+  "description": "Search page text with Ctrl+F, highlight all matches, and match case or whole words.",
+  "minimum_chrome_version": "120",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "background": {
+    "service_worker": "src/background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*/*"],
+      "js": ["src/icons.js", "src/search.js", "src/bar.js", "src/match-cue.js", "src/scroll-markers.js", "src/content.js"],
+      "run_at": "document_start",
+      "all_frames": true,
+      "match_origin_as_fallback": true
+    }
+  ]
+}
