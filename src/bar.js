@@ -1,6 +1,7 @@
 (() => {
   "use strict";
 
+  const colors = globalThis.findOptionsColors;
   const styles = `
     :host {
       all: initial;
@@ -36,8 +37,8 @@
     *, *::before, *::after { box-sizing: border-box; }
     .bar {
       display: flex;
-      align-items: center;
-      gap: 3px;
+      flex-direction: column;
+      gap: 5px;
       padding: 5px;
       border: 1px solid var(--line);
       border-top: 0;
@@ -45,6 +46,25 @@
       background: var(--surface);
       box-shadow: 0 3px 12px var(--shadow);
     }
+    .toolbar, .term-row { display: flex; align-items: center; gap: 3px; }
+    .extra-terms { display: flex; flex-direction: column; gap: 4px; }
+    .extra-terms[hidden] { display: none; }
+    .term-rows { display: grid; gap: 3px; max-height: min(36vh, 190px); overflow: auto; }
+    .term-row .tooltip { display: none; }
+    .add-term { align-self: flex-start; }
+    .swatch {
+      flex: none;
+      width: 10px;
+      height: 10px;
+      margin-inline-end: 6px;
+      border-radius: 50%;
+      border: 1px solid #0004;
+      background: var(--term-light);
+    }
+    .primary .swatch { display: none; }
+    .bar.has-extra .primary .swatch { display: block; }
+    button[aria-expanded="true"] { background: var(--selected); }
+    button[aria-expanded="true"] svg { transform: rotate(180deg); }
     .field {
       display: flex;
       flex: 1;
@@ -134,6 +154,7 @@
         --tip-ink: #292929;
         --shadow: #00000055;
       }
+      .swatch { background: var(--term-dark); }
     }
     @media (forced-colors: active) {
       button[aria-pressed="true"] { border-color: Highlight; }
@@ -141,14 +162,16 @@
     }
     @media (max-width: 380px) {
       :host { inset: 6px 5px auto 5px; width: auto; max-width: none; }
-      .bar { gap: 2px; padding: 3px; }
+      .bar { gap: 3px; padding: 3px; }
+      .toolbar, .term-row { gap: 2px; }
+      .swatch { width: 8px; height: 8px; margin-inline-end: 3px; }
       .group { gap: 0; }
       button { width: 24px; }
       .field { padding-inline: 4px; }
     }
   `;
 
-  function createBar({ onNavigate, onOption, onClose }) {
+  function createBar({ onNavigate, onOption, onClose, onTermsChanged }) {
     const host = document.createElement("find-options-panel");
     host.setAttribute("popover", "manual");
     const root = host.attachShadow({ mode: "open" });
@@ -160,18 +183,37 @@
     bar.className = "bar";
     bar.setAttribute("role", "search");
     bar.setAttribute("aria-label", "Slightly Better Find");
-    const field = document.createElement("div");
-    field.className = "field";
-    const input = document.createElement("input");
-    input.setAttribute("aria-label", "Find in page");
-    input.placeholder = "Find in page";
-    input.autocomplete = "off";
-    input.spellcheck = false;
+    const toolbar = document.createElement("div");
+    toolbar.className = "toolbar";
+    bar.append(toolbar);
+    const fields = new Map();
+
+    function makeField(term, label) {
+      const field = document.createElement("div");
+      field.className = "field";
+      const input = document.createElement("input");
+      input.setAttribute("aria-label", label);
+      input.placeholder = term ? "Enter a word or phrase" : label;
+      input.autocomplete = "off";
+      input.spellcheck = false;
+      input.dataset.term = String(term);
+      fields.set(term, input);
+      const swatch = document.createElement("span");
+      swatch.className = "swatch";
+      swatch.setAttribute("aria-hidden", "true");
+      swatch.style.setProperty("--term-light", colors[term][0]);
+      swatch.style.setProperty("--term-dark", colors[term][2]);
+      field.append(swatch, input);
+      return { field, input };
+    }
+
+    const { field, input } = makeField(0, "Find in page");
+    field.classList.add("primary");
     const count = document.createElement("span");
     count.className = "count";
     count.setAttribute("role", "status");
-    field.append(input, count);
-    bar.append(field);
+    field.append(count);
+    toolbar.append(field);
 
     function symbol(name) {
       const namespace = "http://www.w3.org/2000/svg";
@@ -210,7 +252,7 @@
     navigation.className = "group";
     const back = control(navigation, "Previous match", "chevron-left", () => onNavigate(-1));
     const forward = control(navigation, "Next match", "chevron-right", () => onNavigate(1));
-    bar.append(navigation);
+    toolbar.append(navigation);
 
     const options = document.createElement("div");
     options.className = "group";
@@ -219,9 +261,74 @@
       matchCase: control(options, "Match case", "case-sensitive", () => onOption("matchCase")),
       wholeWord: control(options, "Match whole word", "whole-word", () => onOption("wholeWord"))
     };
-    bar.append(options);
-    control(bar, "Close Find", "x", onClose);
+    toolbar.append(options);
+
+    const extra = document.createElement("div");
+    extra.id = "extra-search-terms";
+    extra.className = "extra-terms";
+    extra.setAttribute("role", "group");
+    extra.setAttribute("aria-label", "Additional search terms");
+    const rows = document.createElement("div");
+    rows.className = "term-rows";
+    extra.append(rows);
+
+    const dropdown = control(toolbar, "Multiple search terms", "chevron-down", () => {
+      const expand = extra.hidden;
+      setExpanded(expand);
+      if (expand) {
+        if (fields.size === 1) addTerm();
+        else Array.from(fields.values())[1].focus();
+      }
+    });
+    dropdown.setAttribute("aria-controls", extra.id);
+    setExpanded(false);
+    control(toolbar, "Close Find", "x", onClose);
+
+    const add = control(extra, "Add search term", "plus", addTerm);
+    add.parentElement.classList.add("add-term");
+    bar.append(extra);
     root.append(bar);
+
+    function setExpanded(expand) {
+      extra.hidden = !expand;
+      dropdown.setAttribute("aria-expanded", String(expand));
+    }
+
+    function updateFields() {
+      bar.classList.toggle("has-extra", fields.size > 1);
+      add.disabled = fields.size >= colors.length;
+    }
+
+    function addTerm() {
+      const term = colors.findIndex((_, index) => !fields.has(index));
+      if (term < 0) return;
+      const row = document.createElement("div");
+      row.className = "term-row";
+      const { field, input } = makeField(term, `Search term ${term + 1}`);
+      row.append(field);
+      const removeLabel = `Remove search term ${term + 1}`;
+      const remove = control(row, removeLabel, "x", () => {
+        fields.delete(term);
+        row.remove();
+        updateFields();
+        if (input.value.trim()) onTermsChanged();
+        add.focus();
+      });
+      remove.title = removeLabel;
+      rows.append(row);
+      updateFields();
+      input.focus();
+    }
+
+    function resetQueries() {
+      input.value = "";
+      for (const term of fields.keys()) {
+        if (term !== 0) fields.delete(term);
+      }
+      rows.replaceChildren();
+      updateFields();
+      setExpanded(false);
+    }
 
     root.addEventListener("keydown", (event) => {
       if (event.key !== "Escape" || event.isComposing) return;
@@ -241,7 +348,14 @@
     }
 
     document.documentElement.append(host);
-    return { host, input, update };
+    return {
+      host, input, update, resetQueries,
+      termOf: (element) => {
+        const term = Number(element?.dataset?.term);
+        return fields.get(term) === element ? term : undefined;
+      },
+      queries: () => Array.from(fields, ([term, field]) => ({ term, text: field.value.trim() })).filter(({ text }) => text)
+    };
   }
 
   globalThis.createFindOptionsBar = createBar;

@@ -115,28 +115,34 @@
     return range;
   }
 
-  function findMatches(runs, query, { matchCase, wholeWord }) {
-    const normalized = query.replace(whitespace, " ").trim();
-    if (!normalized) return [];
-    const literal = normalized.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const pattern = new RegExp(literal, matchCase ? "gu" : "giu");
+  function findMatches(runs, queries, { matchCase, wholeWord }) {
+    const patterns = queries.map(({ text, term }) => {
+      const normalized = text.replace(whitespace, " ").trim();
+      const literal = normalized.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      return { pattern: new RegExp(literal, matchCase ? "gu" : "giu"), term };
+    });
     const matches = [];
     for (const { text, spans } of runs) {
-      if (!pattern.test(text)) continue;
-      pattern.lastIndex = 0;
       const segments = wholeWord ? segmenter.segment(text) : null;
-      for (const match of text.matchAll(pattern)) {
-        const start = match.index;
-        const end = start + match[0].length;
-        if (segments && (segments.containing(start)?.index !== start
-          || (end < text.length && segments.containing(end)?.index !== end))) continue;
-        matches.push(makeRange(spans, start, end));
+      const hits = [];
+      for (const { pattern, term } of patterns) {
+        for (const match of text.matchAll(pattern)) {
+          const start = match.index;
+          const end = start + match[0].length;
+          if (segments && (segments.containing(start)?.index !== start
+            || (end < text.length && segments.containing(end)?.index !== end))) continue;
+          hits.push({ term, start, end });
+        }
+      }
+      hits.sort((a, b) => a.start - b.start || a.term - b.term);
+      for (const { term, start, end } of hits) {
+        matches.push({ term, range: makeRange(spans, start, end) });
       }
     }
     return matches;
   }
 
-  function revealRange(range, topWindow) {
+  function revealRange(range, topWindow, findBar) {
     const node = range.startContainer;
     const view = node.ownerDocument.defaultView;
     for (let element = node.parentElement; element; element = element.parentElement) {
@@ -156,9 +162,11 @@
       if (x || y) element.scrollBy({ left: x, top: y, behavior: "instant" });
     }
     const rect = range.getBoundingClientRect();
-    const margin = view === topWindow ? 76 : 8;
+    const overlapsBar = view === topWindow && findBar && rect.left < findBar.right && rect.right > findBar.left;
+    const margin = view === topWindow ? Math.max(76, overlapsBar ? findBar.bottom + 8 : 0) : 8;
     const x = rect.left < 0 || rect.right > view.innerWidth ? rect.left - view.innerWidth / 3 : 0;
-    const y = rect.top < margin || rect.bottom > view.innerHeight ? rect.top - view.innerHeight / 3 : 0;
+    const targetTop = Math.max(view.innerHeight / 3, margin);
+    const y = rect.top < margin || rect.bottom > view.innerHeight ? rect.top - targetTop : 0;
     if (x || y) view.scrollBy({ left: x, top: y, behavior: "instant" });
     for (let frameWindow = view; frameWindow && frameWindow !== topWindow; frameWindow = frameWindow.parent) {
       frameWindow.frameElement?.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "instant" });

@@ -1,5 +1,7 @@
 // Icon geometry from lucide-static 1.77.0. See LUCIDE-LICENSE.txt.
 globalThis.findOptionsIcons = {
+  "chevron-down": [["path",{"d":"m6 9 6 6 6-6"}]],
+  "plus": [["path",{"d":"M5 12h14"}],["path",{"d":"M12 5v14"}]],
   "case-sensitive": [["path",{"d":"m2 16 4.039-9.69a.5.5 0 0 1 .923 0L11 16"}],["path",{"d":"M22 9v7"}],["path",{"d":"M3.304 13h6.392"}],["circle",{"cx":"18.5","cy":"12.5","r":"3.5"}]],
   "chevron-left": [["path",{"d":"m15 18-6-6 6-6"}]],
   "chevron-right": [["path",{"d":"m9 18 6-6-6-6"}]],

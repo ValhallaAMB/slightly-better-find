@@ -10,6 +10,8 @@ Find text on a webpage with **Ctrl+F** or **⌘+F**. The compact search bar adds
 
 Click a notch beside the scrollbar to jump to that match. The current notch is orange. If several matches share a notch, click it again to cycle through them.
 
+Use the chevron to show more search fields and **+** to add another. Search up to 10 words or phrases at once. Each field has a color that matches its page highlights and scrollbar notches. The arrows and match counter cover all results in page order. Collapsing the fields keeps your queries active.
+
 ## Installation on Chromium browsers
 
 1. Clone the repository to your directory of choice.

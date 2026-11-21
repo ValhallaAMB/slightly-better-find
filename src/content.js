@@ -9,20 +9,24 @@
   const settings = { highlightAll: true, matchCase: false, wholeWord: false };
   const frames = new Set();
   const highlightSheets = new Map();
-  const allName = "find-options-59c1-all";
-  const activeName = "find-options-59c1-active";
-  const highlightRules = `
-    ::highlight(${allName}) { background-color: #ffec6b; color: #25210c; }
-    ::highlight(${activeName}) { background-color: #ff9a3d; color: #271607; }
+  const colors = globalThis.findOptionsColors;
+  const allName = (term) => term ? `find-options-59c1-all-${term}` : "find-options-59c1-all";
+  const activeName = (term) => term ? `find-options-59c1-active-${term}` : "find-options-59c1-active";
+  const highlightRule = (name, color, ink = "#25210c") =>
+    `::highlight(${name}) { background-color: ${color}; color: ${ink}; }`;
+  const highlightRules = colors.map(([light, activeLight, dark, activeDark], term) => `
+    ${highlightRule(allName(term), light)}
+    ${highlightRule(activeName(term), activeLight)}
     @media (prefers-color-scheme: dark) {
-      ::highlight(${allName}) { background-color: #f3d755; color: #211b08; }
-      ::highlight(${activeName}) { background-color: #ffa34d; color: #271607; }
+      ${highlightRule(allName(term), dark)}
+      ${highlightRule(activeName(term), activeDark)}
     }
     @media (forced-colors: active) {
-      ::highlight(${allName}) { background-color: Mark; color: MarkText; }
-      ::highlight(${activeName}) { background-color: Highlight; color: HighlightText; }
+      ${highlightRule(allName(term), "Mark", "MarkText")}
+      ${highlightRule(activeName(term), "Highlight", "HighlightText")}
     }
-  `;
+  `).join("");
+
 
   let bar;
   let markers;
@@ -33,6 +37,7 @@
   let observer;
   let timer;
   let queryPending = false;
+  let editedTerm;
   let stopMatchCue;
   const keysPressedInFind = new Set();
 
@@ -57,7 +62,7 @@
   }
 
   function isFindInputEvent(event) {
-    return bar && event.target === bar.host && event.composedPath()[0] === bar.input;
+    return bar && event.target === bar.host && bar.termOf(event.composedPath()[0]) !== undefined;
   }
 
   function isFindShortcut(event) {
@@ -115,10 +120,15 @@
     if (!isFindInputEvent(event)) return;
     event.stopImmediatePropagation();
     if (event.type === "compositionend" || event.type === "input" && !event.isComposing) {
-      stopMatchCue?.();
-      queryPending = true;
-      scheduleSearch(false, true);
+      onTermsChanged(bar.termOf(event.composedPath()[0]));
     }
+  }
+
+  function onTermsChanged(term) {
+    stopMatchCue?.();
+    editedTerm = term;
+    queryPending = true;
+    scheduleSearch(false, true);
   }
 
   for (const type of ["beforeinput", "input", "compositionstart", "compositionupdate", "compositionend",
@@ -146,7 +156,7 @@
 
   function open() {
     if (!bar) {
-      bar = globalThis.createFindOptionsBar({ onNavigate, onOption, onClose: close });
+      bar = globalThis.createFindOptionsBar({ onNavigate, onOption, onClose: close, onTermsChanged });
       markers = scrollMarkers.create(document, onMarkerSelect);
     }
     if (!isOpen()) {
@@ -188,6 +198,7 @@
     clearTimeout(timer);
     timer = undefined;
     queryPending = false;
+    editedTerm = undefined;
     stopMatchCue?.();
     stopMatchCue = undefined;
     markers?.clear();
@@ -209,7 +220,7 @@
     if (!bar) return;
     previousFocus = undefined;
     close();
-    bar.input.value = "";
+    bar.resetQueries();
     Object.assign(settings, { highlightAll: true, matchCase: false, wholeWord: false });
   }
 
@@ -219,7 +230,7 @@
       return;
     }
     index = undefined;
-    if (bar.input.value.trim() && timer === undefined) scheduleSearch(true, false);
+    if (bar.queries().length && timer === undefined) scheduleSearch(true, false);
   }
 
   function scheduleSearch(preserve, reveal) {
@@ -244,12 +255,18 @@
     render(true);
   }
 
-  function onMarkerSelect(range) {
-    if (!isOpen() || queryPending || !range || range.collapsed || !range.startContainer.isConnected) return;
+  function sameMatch(first, second) {
+    return first.term === second.term
+      && first.range.startContainer === second.range.startContainer
+      && first.range.startOffset === second.range.startOffset
+      && first.range.endContainer === second.range.endContainer
+      && first.range.endOffset === second.range.endOffset;
+  }
+
+  function onMarkerSelect(match) {
+    if (!isOpen() || queryPending || !match || match.range.collapsed || !match.range.startContainer.isConnected) return;
     if (timer !== undefined) search({ preserve: true, reveal: false });
-    const selected = matches.findIndex((match) =>
-      match.startContainer === range.startContainer && match.startOffset === range.startOffset
-      && match.endContainer === range.endContainer && match.endOffset === range.endOffset);
+    const selected = matches.findIndex((candidate) => sameMatch(candidate, match));
     if (selected === -1) return;
     active = selected;
     render(true);
@@ -259,35 +276,37 @@
     clearTimeout(timer);
     timer = undefined;
     queryPending = false;
+    const preferredTerm = editedTerm;
+    editedTerm = undefined;
     if (rebuild) index = undefined;
     if (!isOpen()) return;
-    const previousRange = preserve ? matches[active] : undefined;
+    const previousMatch = preserve ? matches[active] : undefined;
     const previousIndex = active;
-    const query = bar.input.value;
-    if (query.trim()) {
+    const queries = bar.queries();
+    if (queries.length) {
       if (!index) {
         index = collectText(document, bar.host);
         observeDocuments(index.documents);
       }
-      matches = findMatches(index.runs, query, settings);
+      matches = findMatches(index.runs, queries, settings);
     } else {
       matches = [];
       index = undefined;
       observeDocuments(new Set([document]));
     }
-    active = matches.length ? 0 : -1;
-    if (previousRange && matches.length) {
-      const same = matches.findIndex((range) => range.startContainer === previousRange.startContainer
-        && range.startOffset === previousRange.startOffset);
+    const intended = matches.findIndex((match) => match.term === preferredTerm);
+    active = matches.length ? Math.max(0, intended) : -1;
+    if (previousMatch && matches.length) {
+      const same = matches.findIndex((match) => sameMatch(match, previousMatch));
       active = same >= 0 ? same : Math.min(previousIndex, matches.length - 1);
     }
     render(reveal);
   }
 
   function clearHighlights(keep) {
-    for (const [doc, { sheet, registry }] of highlightSheets) {
-      registry.delete(allName);
-      registry.delete(activeName);
+    for (const [doc, { sheet, registry, names }] of highlightSheets) {
+      for (const name of names) registry.delete(name);
+      names.clear();
       if (keep.has(doc)) continue;
       doc.adoptedStyleSheets = doc.adoptedStyleSheets.filter((item) => item !== sheet);
       highlightSheets.delete(doc);
@@ -296,41 +315,41 @@
 
   function render(reveal) {
     const current = matches[active];
-    const visibleMatches = settings.highlightAll ? matches : current ? [current] : [];
-    const byDocument = new Map();
-    for (const range of visibleMatches) {
-      const doc = range.startContainer.ownerDocument;
-      if (!byDocument.has(doc)) byDocument.set(doc, []);
-      if (range !== current) byDocument.get(doc).push(range);
+    const visible = settings.highlightAll ? matches : current ? [current] : [];
+    const documents = new Map();
+    for (const match of visible) {
+      const doc = match.range.startContainer.ownerDocument;
+      if (!documents.has(doc)) documents.set(doc, new Map());
+      const terms = documents.get(doc);
+      const name = match === current ? activeName(match.term) : allName(match.term);
+      if (!terms.has(name)) terms.set(name, { priority: match === current ? colors.length : match.term, ranges: [] });
+      terms.get(name).ranges.push(match.range);
     }
-    clearHighlights(byDocument);
-    for (const [doc, ranges] of byDocument) {
+    clearHighlights(documents);
+    for (const [doc, terms] of documents) {
       const view = doc.defaultView;
       if (!view?.CSS.highlights) continue;
       if (!highlightSheets.has(doc)) {
         const sheet = new view.CSSStyleSheet();
         sheet.replaceSync(highlightRules);
         doc.adoptedStyleSheets = [...doc.adoptedStyleSheets, sheet];
-        highlightSheets.set(doc, { sheet, registry: view.CSS.highlights });
+        highlightSheets.set(doc, { sheet, registry: view.CSS.highlights, names: new Set() });
       }
-      const { registry } = highlightSheets.get(doc);
-      if (ranges.length) {
+      const { registry, names } = highlightSheets.get(doc);
+      for (const [name, { priority, ranges }] of terms) {
         const highlight = new view.Highlight();
         for (const range of ranges) highlight.add(range);
-        registry.set(allName, highlight);
-      }
-      if (current.startContainer.ownerDocument === doc) {
-        const selected = new view.Highlight(current);
-        selected.priority = 1;
-        registry.set(activeName, selected);
+        highlight.priority = priority;
+        registry.set(name, highlight);
+        names.add(name);
       }
     }
-    bar.update(active, matches.length, settings, Boolean(bar.input.value.trim()));
+    bar.update(active, matches.length, settings, Boolean(bar.queries().length));
     markers.update(matches, active);
     if (reveal && current) {
       stopMatchCue?.();
-      revealRange(current, window);
-      stopMatchCue = matchCue.play(current, activeName);
+      revealRange(current.range, window, bar.host.getBoundingClientRect());
+      stopMatchCue = matchCue.play(current.range, activeName(current.term));
     }
   }
 })();

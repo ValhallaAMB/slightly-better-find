@@ -2,6 +2,7 @@
   "use strict";
 
   const elementName = "find-options-scroll-markers";
+  const colors = globalThis.findOptionsColors;
   const trackWidth = 10;
   const svgNamespace = "http://www.w3.org/2000/svg";
   const styles = `
@@ -11,17 +12,16 @@
       width: ${trackWidth}px;
       pointer-events: none;
       z-index: 2147483646;
-      --match: #ffec6b;
-      --current: #ff9a3d;
     }
     :host([hidden]) { display: none; }
     svg { display: block; width: 100%; height: 100%; overflow: hidden; }
     path { fill: none; stroke-linecap: round; }
     .hit-area { stroke: transparent; stroke-width: 8; pointer-events: stroke; cursor: pointer; }
-    .matches { stroke: var(--match); stroke-width: 2.5; filter: drop-shadow(0 0 0.7px #3a2d16); }
-    .current { stroke: var(--current); stroke-width: 3.5; filter: drop-shadow(0 0 0.8px #3a2d16); }
+    .matches { stroke: var(--tick-light); stroke-width: 2.5; filter: drop-shadow(0 0 0.7px #3a2d16); }
+    .current { stroke: var(--tick-light); stroke-width: 3.5; filter: drop-shadow(0 0 0.8px #3a2d16); }
+    path.split { stroke-linecap: butt; filter: none; }
     @media (prefers-color-scheme: dark) {
-      :host { --match: #f3d755; --current: #ffa34d; }
+      .matches, .current { stroke: var(--tick-dark); }
     }
     @media (forced-colors: active) {
       svg { forced-color-adjust: none; }
@@ -87,16 +87,13 @@
       shadow.adoptedStyleSheets = [sheet];
       const svg = doc.createElementNS(svgNamespace, "svg");
       svg.setAttribute("preserveAspectRatio", "none");
-      const matches = doc.createElementNS(svgNamespace, "path");
-      matches.setAttribute("class", "matches");
-      const current = doc.createElementNS(svgNamespace, "path");
-      current.setAttribute("class", "current");
+      const marks = doc.createElementNS(svgNamespace, "g");
       const hitArea = doc.createElementNS(svgNamespace, "path");
       hitArea.setAttribute("class", "hit-area");
-      svg.append(matches, current, hitArea);
+      svg.append(marks, hitArea);
       shadow.append(svg);
       doc.documentElement.append(host);
-      const track = { host, svg, matches, current, hitArea };
+      const track = { host, svg, marks, hitArea };
 
       hitArea.addEventListener("mousedown", (event) => {
         if (!event.isTrusted || event.button !== 0) return;
@@ -106,14 +103,14 @@
       hitArea.addEventListener("click", (event) => {
         if (!event.isTrusted || event.button !== 0) return;
         event.stopPropagation();
-        selectTick(track, event.clientY);
+        selectTick(track, event.clientX, event.clientY);
       });
       return track;
     }
 
-    function selectTick(track, clientY) {
+    function selectTick(track, clientX, clientY) {
       const bounds = track.svg.getBoundingClientRect();
-      if (!bounds.height) return;
+      if (!bounds.height || !bounds.width) return;
       const y = (clientY - bounds.top) * track.height / bounds.height;
       let nearest;
       let distance = Infinity;
@@ -126,7 +123,11 @@
       if (!nearest) return;
       // If several results share one tick, clicking again advances within that group.
       const previous = ranges === track.ranges ? active : track.active;
-      const index = nearest[(nearest.indexOf(previous) + 1) % nearest.length];
+      const lanes = Array.from(nearest.values());
+      const x = (clientX - bounds.left) * trackWidth / bounds.width;
+      const lane = Math.max(0, Math.min(lanes.length - 1, Math.floor((x - 1) / (trackWidth - 2) * lanes.length)));
+      const indexes = lanes[lane];
+      const index = indexes[(indexes.indexOf(previous) + 1) % indexes.length];
       onSelect(track.ranges[index]);
     }
 
@@ -163,7 +164,7 @@
         return result;
       }
 
-      for (const [index, range] of ranges.entries()) {
+      for (const [index, { range }] of ranges.entries()) {
         if (!range.startContainer.isConnected || !range.startContainer.ownerDocument.defaultView) continue;
         const rect = range.getBoundingClientRect();
         if (!rect.width || !rect.height) continue;
@@ -290,21 +291,46 @@
         track.dirty = false;
         track.svg.setAttribute("viewBox", `0 0 ${trackWidth} ${height}`);
         const ticks = new Map();
-        const others = new Set();
-        let current;
         for (const { index, position } of track.points) {
           const y = Math.min(height - 2, 2 + Math.round(position * (height - 4) / 2) * 2);
-          if (!ticks.has(y)) ticks.set(y, []);
-          ticks.get(y).push(index);
-          if (index === active) current = y;
-          else others.add(y);
+          const { term } = track.ranges[index];
+          if (!ticks.has(y)) ticks.set(y, new Map());
+          const lanes = ticks.get(y);
+          if (!lanes.has(term)) lanes.set(term, []);
+          lanes.get(term).push(index);
         }
-        others.delete(current);
         track.ticks = ticks;
-        track.matches.setAttribute("d", Array.from(others, (y) => `M3 ${y}h4.5`).join(" "));
-        track.current.setAttribute("d", current === undefined ? "" : `M2 ${current}h6`);
+        drawTicks(track, doc);
         track.hitArea.setAttribute("d", Array.from(ticks.keys(), (y) => `M0 ${y}h${trackWidth}`).join(" "));
       }
+    }
+
+    function drawTicks(track, doc) {
+      const paths = new Map();
+      for (const [y, lanes] of track.ticks) {
+        const split = lanes.size > 1;
+        const width = (trackWidth - 2) / lanes.size;
+        let slot = 0;
+        for (const [term, indexes] of lanes) {
+          const current = indexes.includes(active);
+          const start = split ? 1 + slot * width : current ? 2 : 3;
+          const length = split ? width : current ? 6 : 4.5;
+          const key = `${term}-${current}-${split}`;
+          if (!paths.has(key)) paths.set(key, { term, current, split, segments: [] });
+          paths.get(key).segments.push(`M${start} ${y}h${length}`);
+          slot++;
+        }
+      }
+      const shapes = [...paths.values()].sort((a, b) => Number(a.current) - Number(b.current));
+      track.marks.replaceChildren(...shapes.map(({ term, current, split, segments }) => {
+        const shape = doc.createElementNS(svgNamespace, "path");
+        shape.setAttribute("class", (current ? "current" : "matches") + (split ? " split" : ""));
+        shape.setAttribute("d", segments.join(" "));
+        shape.dataset.term = String(term);
+        shape.style.setProperty("--tick-light", colors[term][current ? 1 : 0]);
+        shape.style.setProperty("--tick-dark", colors[term][current ? 3 : 2]);
+        return shape;
+      }));
     }
 
     return { update, clear };
