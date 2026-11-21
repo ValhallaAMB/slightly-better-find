@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Slightly Better Find",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "Search page text with Ctrl+F, highlight all matches, and match case or whole words.",
   "minimum_chrome_version": "120",
   "icons": {

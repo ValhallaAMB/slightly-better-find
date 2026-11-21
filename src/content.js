@@ -147,7 +147,7 @@
   function open() {
     if (!bar) {
       bar = globalThis.createFindOptionsBar({ onNavigate, onOption, onClose: close });
-      markers = scrollMarkers.create(document);
+      markers = scrollMarkers.create(document, onMarkerSelect);
     }
     if (!isOpen()) {
       previousFocus = focusedElement(document);
@@ -241,6 +241,17 @@
     if (timer !== undefined) search({ preserve: !queryPending, reveal: false });
     if (!matches.length) return;
     active = (active + direction + matches.length) % matches.length;
+    render(true);
+  }
+
+  function onMarkerSelect(range) {
+    if (!isOpen() || queryPending || !range || range.collapsed || !range.startContainer.isConnected) return;
+    if (timer !== undefined) search({ preserve: true, reveal: false });
+    const selected = matches.findIndex((match) =>
+      match.startContainer === range.startContainer && match.startOffset === range.startOffset
+      && match.endContainer === range.endContainer && match.endOffset === range.endOffset);
+    if (selected === -1) return;
+    active = selected;
     render(true);
   }
 

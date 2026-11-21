@@ -2,7 +2,7 @@
   "use strict";
 
   const elementName = "find-options-scroll-markers";
-  const trackWidth = 8;
+  const trackWidth = 10;
   const svgNamespace = "http://www.w3.org/2000/svg";
   const styles = `
     :host {
@@ -17,19 +17,21 @@
     :host([hidden]) { display: none; }
     svg { display: block; width: 100%; height: 100%; overflow: hidden; }
     path { fill: none; stroke-linecap: round; }
-    .matches { stroke: var(--match); stroke-width: 2; filter: drop-shadow(0 0 0.7px #3a2d16); }
-    .current { stroke: var(--current); stroke-width: 3; filter: drop-shadow(0 0 0.8px #3a2d16); }
+    .hit-area { stroke: transparent; stroke-width: 8; pointer-events: stroke; cursor: pointer; }
+    .matches { stroke: var(--match); stroke-width: 2.5; filter: drop-shadow(0 0 0.7px #3a2d16); }
+    .current { stroke: var(--current); stroke-width: 3.5; filter: drop-shadow(0 0 0.8px #3a2d16); }
     @media (prefers-color-scheme: dark) {
       :host { --match: #f3d755; --current: #ffa34d; }
     }
     @media (forced-colors: active) {
       svg { forced-color-adjust: none; }
+      .hit-area { stroke: transparent; }
       .matches { stroke: Mark; filter: none; }
       .current { stroke: Highlight; filter: none; }
     }
   `;
 
-  function create(topDocument) {
+  function create(topDocument, onSelect) {
     const topView = topDocument.defaultView;
     const tracks = new Map();
     const observed = new Set();
@@ -78,7 +80,6 @@
 
     function createTrack(doc) {
       const host = doc.createElement(elementName);
-      host.inert = true;
       host.setAttribute("aria-hidden", "true");
       const shadow = host.attachShadow({ mode: "open" });
       const sheet = new doc.defaultView.CSSStyleSheet();
@@ -90,10 +91,43 @@
       matches.setAttribute("class", "matches");
       const current = doc.createElementNS(svgNamespace, "path");
       current.setAttribute("class", "current");
-      svg.append(matches, current);
+      const hitArea = doc.createElementNS(svgNamespace, "path");
+      hitArea.setAttribute("class", "hit-area");
+      svg.append(matches, current, hitArea);
       shadow.append(svg);
       doc.documentElement.append(host);
-      return { host, svg, matches, current };
+      const track = { host, svg, matches, current, hitArea };
+
+      hitArea.addEventListener("mousedown", (event) => {
+        if (!event.isTrusted || event.button !== 0) return;
+        event.preventDefault();
+        event.stopPropagation();
+      });
+      hitArea.addEventListener("click", (event) => {
+        if (!event.isTrusted || event.button !== 0) return;
+        event.stopPropagation();
+        selectTick(track, event.clientY);
+      });
+      return track;
+    }
+
+    function selectTick(track, clientY) {
+      const bounds = track.svg.getBoundingClientRect();
+      if (!bounds.height) return;
+      const y = (clientY - bounds.top) * track.height / bounds.height;
+      let nearest;
+      let distance = Infinity;
+      for (const [center, indexes] of track.ticks) {
+        const gap = Math.abs(center - y);
+        if (gap >= distance) continue;
+        nearest = indexes;
+        distance = gap;
+      }
+      if (!nearest) return;
+      // If several results share one tick, clicking again advances within that group.
+      const previous = ranges === track.ranges ? active : track.active;
+      const index = nearest[(nearest.indexOf(previous) + 1) % nearest.length];
+      onSelect(track.ranges[index]);
     }
 
     function updateTracks() {
@@ -168,6 +202,7 @@
         if (!tracks.has(element)) tracks.set(element, createTrack(doc));
         const track = tracks.get(element);
         track.points = points;
+        track.ranges = ranges;
         track.dirty = true;
         track.clips = [];
         if (element !== doc.scrollingElement) {
@@ -254,16 +289,21 @@
         track.active = active;
         track.dirty = false;
         track.svg.setAttribute("viewBox", `0 0 ${trackWidth} ${height}`);
+        const ticks = new Map();
         const others = new Set();
         let current;
         for (const { index, position } of track.points) {
           const y = Math.min(height - 2, 2 + Math.round(position * (height - 4) / 2) * 2);
+          if (!ticks.has(y)) ticks.set(y, []);
+          ticks.get(y).push(index);
           if (index === active) current = y;
           else others.add(y);
         }
         others.delete(current);
-        track.matches.setAttribute("d", Array.from(others, (y) => `M3 ${y}h3`).join(" "));
-        track.current.setAttribute("d", current === undefined ? "" : `M2 ${current}h4`);
+        track.ticks = ticks;
+        track.matches.setAttribute("d", Array.from(others, (y) => `M3 ${y}h4.5`).join(" "));
+        track.current.setAttribute("d", current === undefined ? "" : `M2 ${current}h6`);
+        track.hitArea.setAttribute("d", Array.from(ticks.keys(), (y) => `M0 ${y}h${trackWidth}`).join(" "));
       }
     }
 

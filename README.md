@@ -8,6 +8,8 @@ Find text on a webpage with **Ctrl+F** or **⌘+F**. The compact search bar adds
 | Match case | Require the query’s capitalization. | Off |
 | Match whole word | Find complete words or phrases using Unicode word boundaries. | Off |
 
+Click a notch beside the scrollbar to jump to that match. The current notch is orange. If several matches share a notch, click it again to cycle through them.
+
 ## Installation on Chromium browsers
 
 1. Clone the repository to your directory of choice.
