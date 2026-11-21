@@ -47,10 +47,12 @@
       box-shadow: 0 3px 12px var(--shadow);
     }
     .toolbar, .term-row { display: flex; align-items: center; gap: 3px; }
+    .toolbar { justify-content: flex-end; }
+    .toolbar > .count { margin-inline-end: auto; }
+    .term-row.is-current .count { color: var(--ink); font-weight: 600; }
     .extra-terms { display: flex; flex-direction: column; gap: 4px; }
     .extra-terms[hidden] { display: none; }
-    .term-rows { display: grid; gap: 3px; max-height: min(36vh, 190px); overflow: auto; }
-    .term-row .tooltip { display: none; }
+    .term-rows { display: grid; gap: 3px; max-height: min(55vh, 204px); overflow: auto; }
     .add-term { align-self: flex-start; }
     .swatch {
       flex: none;
@@ -61,8 +63,6 @@
       border: 1px solid #0004;
       background: var(--term-light);
     }
-    .primary .swatch { display: none; }
-    .bar.has-extra .primary .swatch { display: block; }
     button[aria-expanded="true"] { background: var(--selected); }
     button[aria-expanded="true"] svg { transform: rotate(180deg); }
     .field {
@@ -112,6 +112,7 @@
     }
     button:hover:not(:disabled) { background: var(--hover); color: var(--ink); }
     button[aria-pressed="true"] { background: var(--selected); color: var(--ink); }
+    button[aria-pressed="mixed"] { border-color: var(--focus); border-style: dashed; color: var(--ink); }
     button[aria-pressed="true"]:hover { background: var(--selected-hover); }
     button:active:not(:disabled) { background: var(--down); color: var(--ink); }
     button:focus-visible { outline: 2px solid var(--focus); outline-offset: -1px; }
@@ -171,7 +172,7 @@
     }
   `;
 
-  function createBar({ onNavigate, onOption, onClose, onTermsChanged }) {
+  function createBar({ onNavigate, onOption, onClose, onTermsChanged, onFieldChange }) {
     const host = document.createElement("find-options-panel");
     host.setAttribute("popover", "manual");
     const root = host.attachShadow({ mode: "open" });
@@ -185,35 +186,23 @@
     bar.setAttribute("aria-label", "Slightly Better Find");
     const toolbar = document.createElement("div");
     toolbar.className = "toolbar";
-    bar.append(toolbar);
+
+    const extra = document.createElement("div");
+    extra.id = "extra-search-terms";
+    extra.className = "extra-terms";
+    extra.setAttribute("role", "group");
+    extra.setAttribute("aria-label", "Search terms");
+    const rows = document.createElement("div");
+    rows.className = "term-rows";
+    extra.append(rows);
+    bar.append(toolbar, extra);
+
     const fields = new Map();
-
-    function makeField(term, label) {
-      const field = document.createElement("div");
-      field.className = "field";
-      const input = document.createElement("input");
-      input.setAttribute("aria-label", label);
-      input.placeholder = term ? "Enter a word or phrase" : label;
-      input.autocomplete = "off";
-      input.spellcheck = false;
-      input.dataset.term = String(term);
-      fields.set(term, input);
-      const swatch = document.createElement("span");
-      swatch.className = "swatch";
-      swatch.setAttribute("aria-hidden", "true");
-      swatch.style.setProperty("--term-light", colors[term][0]);
-      swatch.style.setProperty("--term-dark", colors[term][2]);
-      field.append(swatch, input);
-      return { field, input };
-    }
-
-    const { field, input } = makeField(0, "Find in page");
-    field.classList.add("primary");
-    const count = document.createElement("span");
-    count.className = "count";
-    count.setAttribute("role", "status");
-    field.append(count);
-    toolbar.append(field);
+    const options = [
+      ["highlightAll", "Highlight all matches", "highlighter"],
+      ["matchCase", "Match case", "case-sensitive"],
+      ["wholeWord", "Match whole word", "whole-word"]
+    ];
 
     function symbol(name) {
       const namespace = "http://www.w3.org/2000/svg";
@@ -231,7 +220,7 @@
       return svg;
     }
 
-    function control(parent, label, icon, action) {
+    function control(parent, label, icon, action, nativeTooltip = false) {
       const wrapper = document.createElement("span");
       wrapper.className = "control";
       const button = document.createElement("button");
@@ -239,94 +228,132 @@
       button.setAttribute("aria-label", label);
       button.append(symbol(icon));
       button.addEventListener("click", action);
-      const tooltip = document.createElement("span");
-      tooltip.className = "tooltip";
-      tooltip.setAttribute("aria-hidden", "true");
-      tooltip.textContent = label;
-      wrapper.append(button, tooltip);
+      wrapper.append(button);
+      if (nativeTooltip) {
+        button.title = label;
+      } else {
+        const tooltip = document.createElement("span");
+        tooltip.className = "tooltip";
+        tooltip.setAttribute("aria-hidden", "true");
+        tooltip.textContent = label;
+        wrapper.append(tooltip);
+      }
       parent.append(wrapper);
       return button;
     }
 
-    const navigation = document.createElement("div");
-    navigation.className = "group";
-    const back = control(navigation, "Previous match", "chevron-left", () => onNavigate(-1));
-    const forward = control(navigation, "Next match", "chevron-right", () => onNavigate(1));
-    toolbar.append(navigation);
+    function makeCount(label) {
+      const count = document.createElement("span");
+      count.className = "count";
+      count.setAttribute("role", "status");
+      count.setAttribute("aria-label", label);
+      return count;
+    }
 
-    const options = document.createElement("div");
-    options.className = "group";
-    const toggles = {
-      highlightAll: control(options, "Highlight all matches", "highlighter", () => onOption("highlightAll")),
-      matchCase: control(options, "Match case", "case-sensitive", () => onOption("matchCase")),
-      wholeWord: control(options, "Match whole word", "whole-word", () => onOption("wholeWord"))
-    };
-    toolbar.append(options);
+    function makeControls(parent, term) {
+      const isLocal = term !== undefined;
+      const suffix = isLocal ? ` for search term ${term + 1}` : "";
+      const navigation = document.createElement("div");
+      navigation.className = "group";
+      const previous = control(navigation, "Previous match" + suffix, "chevron-left", () => onNavigate(-1, term), isLocal);
+      const next = control(navigation, "Next match" + suffix, "chevron-right", () => onNavigate(1, term), isLocal);
+      const tools = document.createElement("div");
+      tools.className = "group";
+      const toggles = Object.fromEntries(options.map(([key, label, icon]) =>
+        [key, control(tools, label + suffix, icon, () => onOption(key, term), isLocal)]));
+      parent.append(navigation, tools);
+      return { previous, next, toggles };
+    }
 
-    const extra = document.createElement("div");
-    extra.id = "extra-search-terms";
-    extra.className = "extra-terms";
-    extra.setAttribute("role", "group");
-    extra.setAttribute("aria-label", "Additional search terms");
-    const rows = document.createElement("div");
-    rows.className = "term-rows";
-    extra.append(rows);
+    function makeTerm(term) {
+      const row = document.createElement("div");
+      row.className = "term-row";
+      row.setAttribute("role", "group");
+      row.setAttribute("aria-label", `Search term ${term + 1} controls`);
+      const field = document.createElement("div");
+      field.className = "field";
+      const input = document.createElement("input");
+      input.setAttribute("aria-label", term ? `Search term ${term + 1}` : "Find in page");
+      input.placeholder = term ? "Enter a word or phrase" : "Find in page";
+      input.autocomplete = "off";
+      input.spellcheck = false;
+      input.dataset.term = String(term);
+      const count = makeCount(`Search term ${term + 1} matches`);
+      const swatch = document.createElement("span");
+      swatch.className = "swatch";
+      swatch.setAttribute("aria-hidden", "true");
+      swatch.style.setProperty("--term-light", colors[term][0]);
+      swatch.style.setProperty("--term-dark", colors[term][2]);
+      field.append(swatch, input, count);
+      row.append(field);
+      const controls = makeControls(row, term);
+      const clear = term ? `Remove search term ${term + 1}` : "Clear search term 1";
+      control(row, clear, "x", () => {
+        const hadQuery = Boolean(input.value.trim());
+        if (term) {
+          fields.delete(term);
+          row.remove();
+          add.disabled = false;
+          onFieldChange(term, hadQuery);
+          add.focus();
+        } else {
+          input.value = "";
+          if (hadQuery) onTermsChanged(0);
+          input.focus();
+        }
+      }, true);
+      const entry = { row, field, input, count, controls };
+      fields.set(term, entry);
+      rows.append(row);
+      return entry;
+    }
 
+    const primary = makeTerm(0);
+    const globalCount = makeCount("All matches");
+    const globalControls = makeControls(toolbar);
     const dropdown = control(toolbar, "Multiple search terms", "chevron-down", () => {
       const expand = extra.hidden;
       setExpanded(expand);
-      if (expand) {
-        if (fields.size === 1) addTerm();
-        else Array.from(fields.values())[1].focus();
-      }
+      if (expand && fields.size === 1) addTerm();
+      else primary.input.focus();
     });
     dropdown.setAttribute("aria-controls", extra.id);
-    setExpanded(false);
     control(toolbar, "Close Find", "x", onClose);
-
     const add = control(extra, "Add search term", "plus", addTerm);
     add.parentElement.classList.add("add-term");
-    bar.append(extra);
     root.append(bar);
+    setExpanded(false);
 
     function setExpanded(expand) {
       extra.hidden = !expand;
       dropdown.setAttribute("aria-expanded", String(expand));
-    }
-
-    function updateFields() {
-      bar.classList.toggle("has-extra", fields.size > 1);
-      add.disabled = fields.size >= colors.length;
+      primary.count.hidden = !expand;
+      if (expand) {
+        primary.row.prepend(primary.field);
+        toolbar.prepend(globalCount);
+      } else {
+        toolbar.prepend(primary.field);
+        primary.field.append(globalCount);
+      }
     }
 
     function addTerm() {
       const term = colors.findIndex((_, index) => !fields.has(index));
       if (term < 0) return;
-      const row = document.createElement("div");
-      row.className = "term-row";
-      const { field, input } = makeField(term, `Search term ${term + 1}`);
-      row.append(field);
-      const removeLabel = `Remove search term ${term + 1}`;
-      const remove = control(row, removeLabel, "x", () => {
-        fields.delete(term);
-        row.remove();
-        updateFields();
-        if (input.value.trim()) onTermsChanged();
-        add.focus();
-      });
-      remove.title = removeLabel;
-      rows.append(row);
-      updateFields();
-      input.focus();
+      const entry = makeTerm(term);
+      add.disabled = fields.size >= colors.length;
+      onFieldChange();
+      entry.input.focus();
     }
 
     function resetQueries() {
-      input.value = "";
-      for (const term of fields.keys()) {
-        if (term !== 0) fields.delete(term);
+      primary.input.value = "";
+      for (const [term, entry] of fields) {
+        if (!term) continue;
+        fields.delete(term);
+        entry.row.remove();
       }
-      rows.replaceChildren();
-      updateFields();
+      add.disabled = false;
       setExpanded(false);
     }
 
@@ -337,24 +364,40 @@
       onClose();
     });
 
-    function update(active, total, settings, hasQuery) {
-      const caption = hasQuery ? `${active + 1}/${total}` : "";
-      if (count.textContent !== caption) count.textContent = caption;
-      back.disabled = !total;
-      forward.disabled = !total;
-      for (const [key, button] of Object.entries(toggles)) {
+    function updateControls(controls, total, settings) {
+      controls.previous.disabled = !total;
+      controls.next.disabled = !total;
+      for (const [key, button] of Object.entries(controls.toggles)) {
         button.setAttribute("aria-pressed", String(settings[key]));
+      }
+    }
+
+    function updateCount(count, active, total, hasQuery) {
+      const value = hasQuery ? `${active}/${total}` : "";
+      if (count.textContent !== value) count.textContent = value;
+    }
+
+    function update(global, locals) {
+      updateCount(globalCount, global.position, global.total, global.hasQuery);
+      updateControls(globalControls, global.total, global.settings);
+      for (const [term, entry] of fields) {
+        const { position, total, current, settings } = locals.get(term);
+        updateCount(entry.count, position, total, Boolean(entry.input.value.trim()));
+        updateControls(entry.controls, total, settings);
+        entry.row.classList.toggle("is-current", current);
       }
     }
 
     document.documentElement.append(host);
     return {
-      host, input, update, resetQueries,
+      host, input: primary.input, update, resetQueries,
+      isExpanded: () => !extra.hidden,
+      terms: () => fields.keys(),
       termOf: (element) => {
         const term = Number(element?.dataset?.term);
-        return fields.get(term) === element ? term : undefined;
+        return fields.get(term)?.input === element ? term : undefined;
       },
-      queries: () => Array.from(fields, ([term, field]) => ({ term, text: field.value.trim() })).filter(({ text }) => text)
+      queries: () => Array.from(fields, ([term, { input }]) => ({ term, text: input.value.trim() })).filter(({ text }) => text)
     };
   }
 

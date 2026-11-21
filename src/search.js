@@ -115,21 +115,22 @@
     return range;
   }
 
-  function findMatches(runs, queries, { matchCase, wholeWord }) {
-    const patterns = queries.map(({ text, term }) => {
+  function findMatches(runs, queries) {
+    const patterns = queries.map(({ text, term, matchCase, wholeWord }) => {
       const normalized = text.replace(whitespace, " ").trim();
       const literal = normalized.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      return { pattern: new RegExp(literal, matchCase ? "gu" : "giu"), term };
+      return { pattern: new RegExp(literal, matchCase ? "gu" : "giu"), term, wholeWord };
     });
     const matches = [];
+    const usesWholeWord = patterns.some(({ wholeWord }) => wholeWord);
     for (const { text, spans } of runs) {
-      const segments = wholeWord ? segmenter.segment(text) : null;
+      const segments = usesWholeWord ? segmenter.segment(text) : null;
       const hits = [];
-      for (const { pattern, term } of patterns) {
+      for (const { pattern, term, wholeWord } of patterns) {
         for (const match of text.matchAll(pattern)) {
           const start = match.index;
           const end = start + match[0].length;
-          if (segments && (segments.containing(start)?.index !== start
+          if (wholeWord && (segments.containing(start)?.index !== start
             || (end < text.length && segments.containing(end)?.index !== end))) continue;
           hits.push({ term, start, end });
         }

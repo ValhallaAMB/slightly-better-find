@@ -6,7 +6,9 @@
   const { collectText, findMatches, revealRange } = globalThis.findOptionsSearch;
   const matchCue = globalThis.findOptionsMatchCue;
   const scrollMarkers = globalThis.findOptionsScrollMarkers;
-  const settings = { highlightAll: true, matchCase: false, wholeWord: false };
+  const defaults = { highlightAll: true, matchCase: false, wholeWord: false };
+  const globalSettings = { ...defaults };
+  const termSettings = new Map();
   const frames = new Set();
   const highlightSheets = new Map();
   const colors = globalThis.findOptionsColors;
@@ -33,6 +35,8 @@
   let previousFocus;
   let index;
   let matches = [];
+  let matchesByTerm = new Map();
+  let termPositions = new Map();
   let active = -1;
   let observer;
   let timer;
@@ -101,7 +105,8 @@
       close();
     } else if (event.key === "Enter") {
       event.preventDefault();
-      onNavigate(event.shiftKey ? -1 : 1);
+      const term = bar.isExpanded() ? bar.termOf(event.composedPath()[0]) : undefined;
+      onNavigate(event.shiftKey ? -1 : 1, term);
     }
   }, true);
 
@@ -156,7 +161,7 @@
 
   function open() {
     if (!bar) {
-      bar = globalThis.createFindOptionsBar({ onNavigate, onOption, onClose: close, onTermsChanged });
+      bar = globalThis.createFindOptionsBar({ onNavigate, onOption, onClose: close, onTermsChanged, onFieldChange });
       markers = scrollMarkers.create(document, onMarkerSelect);
     }
     if (!isOpen()) {
@@ -209,6 +214,8 @@
     window.removeEventListener("resize", documentChanged);
     clearHighlights(new Set());
     matches = [];
+    matchesByTerm.clear();
+    termPositions.clear();
     index = undefined;
     active = -1;
     if (isOpen()) bar.host.hidePopover();
@@ -221,7 +228,8 @@
     previousFocus = undefined;
     close();
     bar.resetQueries();
-    Object.assign(settings, { highlightAll: true, matchCase: false, wholeWord: false });
+    Object.assign(globalSettings, defaults);
+    termSettings.clear();
   }
 
   function documentChanged() {
@@ -238,20 +246,53 @@
     timer = setTimeout(() => search({ preserve, reveal }), 55);
   }
 
-  function onOption(name) {
-    settings[name] = !settings[name];
-    if (name !== "highlightAll" || timer !== undefined) search({ preserve: true, reveal: true });
+  function settingsFor(term) {
+    if (!termSettings.has(term)) termSettings.set(term, { ...globalSettings });
+    return termSettings.get(term);
+  }
+
+  function onFieldChange(removed, hadQuery) {
+    if (removed !== undefined) {
+      termSettings.delete(removed);
+      termPositions.delete(removed);
+    }
+    if (hadQuery) {
+      stopMatchCue?.();
+      search({ preserve: true, reveal: false });
+    } else {
+      render(false);
+    }
+  }
+
+  function onOption(name, term) {
+    if (term === undefined) {
+      const rows = Array.from(bar.terms(), settingsFor);
+      const value = rows.some((row) => !row[name]);
+      globalSettings[name] = value;
+      for (const row of rows) row[name] = value;
+    } else {
+      const settings = settingsFor(term);
+      settings[name] = !settings[name];
+    }
+    if (name !== "highlightAll" || timer !== undefined) search({ preserve: !queryPending, reveal: true });
     else render(false);
   }
 
-  function onNavigate(direction) {
-    if (queryPending && direction > 0) {
+  function onNavigate(direction, term) {
+    if (queryPending && direction > 0 && (term === undefined || term === editedTerm)) {
       search();
       return;
     }
     if (timer !== undefined) search({ preserve: !queryPending, reveal: false });
-    if (!matches.length) return;
-    active = (active + direction + matches.length) % matches.length;
+    if (term === undefined) {
+      if (!matches.length) return;
+      active = (active + direction + matches.length) % matches.length;
+    } else {
+      const indexes = matchesByTerm.get(term);
+      if (!indexes?.length) return;
+      const position = (termPositions.get(term) + direction + indexes.length) % indexes.length;
+      active = indexes[position];
+    }
     render(true);
   }
 
@@ -261,6 +302,24 @@
       && first.range.startOffset === second.range.startOffset
       && first.range.endContainer === second.range.endContainer
       && first.range.endOffset === second.range.endOffset;
+  }
+
+  function setMatches(next) {
+    const groups = new Map();
+    next.forEach(({ term }, index) => {
+      if (!groups.has(term)) groups.set(term, []);
+      groups.get(term).push(index);
+    });
+    const positions = new Map();
+    for (const [term, indexes] of groups) {
+      const previous = termPositions.get(term) ?? 0;
+      const match = matches[matchesByTerm.get(term)?.[previous]];
+      const same = match ? indexes.findIndex((index) => sameMatch(next[index], match)) : -1;
+      positions.set(term, same >= 0 ? same : Math.min(previous, indexes.length - 1));
+    }
+    matches = next;
+    matchesByTerm = groups;
+    termPositions = positions;
   }
 
   function onMarkerSelect(match) {
@@ -288,9 +347,10 @@
         index = collectText(document, bar.host);
         observeDocuments(index.documents);
       }
-      matches = findMatches(index.runs, queries, settings);
+      const scoped = queries.map((query) => ({ ...query, ...settingsFor(query.term) }));
+      setMatches(findMatches(index.runs, scoped));
     } else {
-      matches = [];
+      setMatches([]);
       index = undefined;
       observeDocuments(new Set([document]));
     }
@@ -315,7 +375,8 @@
 
   function render(reveal) {
     const current = matches[active];
-    const visible = settings.highlightAll ? matches : current ? [current] : [];
+    if (current) termPositions.set(current.term, matchesByTerm.get(current.term).indexOf(active));
+    const visible = matches.filter((match) => match === current || settingsFor(match.term).highlightAll);
     const documents = new Map();
     for (const match of visible) {
       const doc = match.range.startContainer.ownerDocument;
@@ -344,7 +405,26 @@
         names.add(name);
       }
     }
-    bar.update(active, matches.length, settings, Boolean(bar.queries().length));
+    const locals = new Map();
+    for (const term of bar.terms()) {
+      locals.set(term, {
+        position: (termPositions.get(term) ?? -1) + 1,
+        total: matchesByTerm.get(term)?.length ?? 0,
+        current: current?.term === term,
+        settings: settingsFor(term)
+      });
+    }
+    const rows = Array.from(locals.values(), ({ settings }) => settings);
+    const combined = Object.fromEntries(Object.keys(defaults).map((key) => {
+      const on = rows.filter((row) => row[key]).length;
+      return [key, on === rows.length ? true : on === 0 ? false : "mixed"];
+    }));
+    bar.update({
+      position: active + 1,
+      total: matches.length,
+      settings: combined,
+      hasQuery: Boolean(bar.queries().length)
+    }, locals);
     markers.update(matches, active);
     if (reveal && current) {
       stopMatchCue?.();
